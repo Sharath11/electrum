@@ -36,7 +36,7 @@ from .logging import get_logger, Logger
 _logger = get_logger(__name__)
 
 HEADER_SIZE = 80  # bytes
-MAX_TARGET = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
+MAX_TARGET = 0x0000000000000000000000000000000000000000000000000000000000000000
 
 
 class MissingHeader(Exception):
@@ -279,6 +279,7 @@ class Blockchain(Logger):
     def update_size(self) -> None:
         p = self.path()
         self._size = os.path.getsize(p)//HEADER_SIZE if os.path.exists(p) else 0
+        self.logger.info(f"size:{self._size}")
 
     @classmethod
     def verify_header(cls, header: dict, prev_hash: str, target: int, expected_header_hash: str=None) -> None:
@@ -291,10 +292,12 @@ class Blockchain(Logger):
             return
         bits = cls.target_to_bits(target)
         if bits != header.get('bits'):
-            raise Exception("bits mismatch: %s vs %s" % (bits, header.get('bits')))
+            print(f">>>>>skip bit mismatch")
+            #raise Exception("bits mismatch: %s vs %s" % (bits, header.get('bits')))
         block_hash_as_num = int.from_bytes(bfh(_hash), byteorder='big')
         if block_hash_as_num > target:
-            raise Exception(f"insufficient proof of work: {block_hash_as_num} vs target {target}")
+            print(f">>>>>skip work")
+            #raise Exception(f"insufficient proof of work: {block_hash_as_num} vs target {target}")
 
     def verify_chunk(self, index: int, data: bytes) -> None:
         num = len(data) // HEADER_SIZE
@@ -315,6 +318,7 @@ class Blockchain(Logger):
     @with_lock
     def path(self):
         d = util.get_headers_dir(self.config)
+        basename='x'
         if self.parent is None:
             filename = 'blockchain_headers'
         else:
@@ -323,6 +327,7 @@ class Blockchain(Logger):
             first_hash = self._forkpoint_hash.lstrip('0')
             basename = f'fork2_{self.forkpoint}_{prev_hash}_{first_hash}'
             filename = os.path.join('forks', basename)
+        self.logger.info(f"{d}:{basename}")
         return os.path.join(d, filename)
 
     @with_lock
@@ -491,12 +496,16 @@ class Blockchain(Logger):
 
     def get_target(self, index: int) -> int:
         # compute target from chunk x, used in chunk x+1
+        import inspect
+        print(">>>caller:",inspect.stack()[1].function, inspect.stack()[1].filename)
         if constants.net.TESTNET:
             return 0
         if index == -1:
+            self.logger.info(f">>>return max_target:{index}")
             return MAX_TARGET
         if index < len(self.checkpoints):
             h, t = self.checkpoints[index]
+            self.logger.info(f"return t {t}")
             return t
         # new target
         first = self.read_header(index * 2016)
@@ -505,27 +514,39 @@ class Blockchain(Logger):
             raise MissingHeader()
         bits = last.get('bits')
         target = self.bits_to_target(bits)
+        self.logger.info(f">>>new {target}:{MAX_TARGET}:{bits}")
         nActualTimespan = last.get('timestamp') - first.get('timestamp')
         nTargetTimespan = 14 * 24 * 60 * 60
         nActualTimespan = max(nActualTimespan, nTargetTimespan // 4)
         nActualTimespan = min(nActualTimespan, nTargetTimespan * 4)
+        
         new_target = min(MAX_TARGET, (target * nActualTimespan) // nTargetTimespan)
         # not any target can be represented in 32 bits:
         new_target = self.bits_to_target(self.target_to_bits(new_target))
+        self.logger.info(f">>>new target is:{new_target}")
+        #return 0x207fffff
         return new_target
 
     @classmethod
     def bits_to_target(cls, bits: int) -> int:
+        import inspect
+        print(">>>caller:",inspect.stack()[1].function, inspect.stack()[1].filename)
+        
         bitsN = (bits >> 24) & 0xff
-        if not (0x03 <= bitsN <= 0x1d):
+        if not (0x03 <= bitsN <= 0x20):
             raise Exception("First part of bits should be in [0x03, 0x1d]")
         bitsBase = bits & 0xffffff
-        if not (0x8000 <= bitsBase <= 0x7fffff):
+        if not (0x0000 <= bitsBase <= 0x7fffff):
             raise Exception("Second part of bits should be in [0x8000, 0x7fffff]")
-        return bitsBase << (8 * (bitsN-3))
+        t=bitsBase << (8 * (bitsN-3))
+        print(f">>>bits:{bits}->{t}")
+        return(t) 
 
     @classmethod
     def target_to_bits(cls, target: int) -> int:
+        import inspect
+        print(">>>caller:",inspect.stack()[1].function, inspect.stack()[1].filename)
+        
         c = ("%064x" % target)[2:]
         while c[:2] == '00' and len(c) > 6:
             c = c[2:]
@@ -533,7 +554,10 @@ class Blockchain(Logger):
         if bitsBase >= 0x800000:
             bitsN += 1
             bitsBase >>= 8
-        return bitsN << 24 | bitsBase
+        t=bitsN << 24 | bitsBase
+        print(f">>>target:{target}->{t}")
+        return(t)
+        return 
 
     def chainwork_of_header_at_height(self, height: int) -> int:
         """work done by single header at given height"""
@@ -570,26 +594,40 @@ class Blockchain(Logger):
         return running_total + work_in_last_partial_chunk
 
     def can_connect(self, header: dict, check_height: bool=True) -> bool:
+        import inspect
+        print(">>>caller:",inspect.stack()[1].function, inspect.stack()[1].filename)
+        
+        self.logger.info(f">>>check_height:{self.height()}")
         if header is None:
+            self.logger.info(f">>>header none:{self.height()}")
             return False
         height = header['block_height']
+        self.logger.info(f">>>check_height:{self.height()}:{height}")
         if check_height and self.height() != height - 1:
+            self.logger.info(f">>>check_height fail:{self.height()}:{height}")
             return False
         if height == 0:
+            self.logger.info(f">>>comapre genesis:{self.height()}:{height}")
             return hash_header(header) == constants.net.GENESIS
         try:
             prev_hash = self.get_hash(height - 1)
         except:
+            self.logger.info(f">>>get_hash prev fail:{self.height()}:{height}")
             return False
         if prev_hash != header.get('prev_block_hash'):
+            self.logger.info(f">>>get block hash fail:{self.height()}:{height}")
             return False
         try:
             target = self.get_target(height // 2016 - 1)
+            
         except MissingHeader:
+            self.logger.info(f">>>get target fail:{self.height()}:{height}")
             return False
         try:
             self.verify_header(header, prev_hash, target)
+            
         except BaseException as e:
+            self.logger.info(f">>>verify header fail:{self.height()}:{height}:{e}")
             return False
         return True
 
@@ -626,6 +664,19 @@ def check_header(header: dict) -> Optional[Blockchain]:
 
 
 def can_connect(header: dict) -> Optional[Blockchain]:
+    
+    
+    
+    import inspect
+    print(">>>caller:",inspect.stack()[1].function, inspect.stack()[1].filename)
+        
+    import logging
+    logger0 = logging.getLogger('test')
+    logger0.setLevel(logging.DEBUG)
+    fh = logging.FileHandler('/tmp/test.log')
+    fh.setLevel(logging.DEBUG)
+    logger0.addHandler(fh)
+    logger0.info(f">>>called:{header}")
     with blockchains_lock: chains = list(blockchains.values())
     for b in chains:
         if b.can_connect(header):
